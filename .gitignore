@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+pnpm-lock.yaml
+# package-lock.json # Keep if using npm
+yarn.lock
+
+# Environment Variables (CRITICAL)
+.env
+.env*.local
+backend/.env
+v2_engine/.env
+
+# Build Outputs
+.next/
+dist/
+build/
+v2_engine/
+
+# Logs
+npm-debug.log*
+*.log
+logs/
+v2_engine/debug_engine.log
+
+# Uploads & Temp
+backend/temp/
+v2_engine/uploads/
+v2_engine/v2.db
+
+# OS
+.DS_Store
+Thumbs.db
