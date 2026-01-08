@@ -220,54 +220,155 @@ const processJob = async (jobId) => {
     try {
         log('Starting processing pipeline...');
 
-        const inputPath = job.inputPath;
+        let currentInputPath = job.inputPath;
 
         // Re-probe metadata to get accurate duration for this step (in case of chaining)
         try {
-            const newMeta = await getMetadata(inputPath);
+            const newMeta = await getMetadata(currentInputPath);
             job.metadata = newMeta;
             log(`Metadata refreshed: ${newMeta.duration}s`);
         } catch (e) {
             log(`Warning: Could not probe new input. Progress might be inaccurate.`);
         }
 
-        const outputPath = path.join(__dirname, '../temp', `output_${jobId}.mp4`);
-
         const options = {
             metadata: job.metadata
         };
         logger.info(`[Debug] Job Metadata: ${JSON.stringify(job.metadata)}`);
 
-        // Subtitles
+        // Subtitles Pre-generation (if needed)
         if (job.intent.subtitles) {
             log('Generating subtitles...');
             const srtPath = path.join(__dirname, '../temp', `${jobId}.srt`);
             // Extract Audio & STT (Mocked)
-            await generateSubtitles(inputPath, srtPath);
+            await generateSubtitles(currentInputPath, srtPath);
             options.subtitlePath = srtPath;
             log('Subtitles generated.');
         }
 
-        // Build FFmpeg Args
-        log('Building FFmpeg command...');
-        const args = buildFFmpegArgs(inputPath, outputPath, job.intent, options);
+        // --- PIPELINE CONSTRUCTION ---
+        // Decompose intent into atomic operations to process sequentially
+        // Order: Remove -> VideoFX (Speed/Reverse) -> Zoom -> Filter -> Subtitles -> Resize -> SwapAudio
+        const pipeline = [];
+        const intent = job.intent;
 
-        // Execute
-        log('Executing FFmpeg...');
+        // 1. Remove/Cut
+        if (intent.videoFX && intent.videoFX.remove) {
+            pipeline.push({ name: 'Remove', intent: { videoFX: { remove: intent.videoFX.remove } } });
+        }
 
-        await executeFFmpeg(args, jobId, (progressObj) => {
-            // Update progress
-            // Assuming we know duration from metadata
-            const duration = job.metadata.duration;
-            if (duration > 0) {
-                const percent = Math.min(100, Math.round((progressObj.time / duration) * 100));
-                job.progress = percent;
+        // 2. VideoFX (Speed)
+        if (intent.videoFX && intent.videoFX.speed) {
+            pipeline.push({ name: 'Speed', intent: { videoFX: { speed: intent.videoFX.speed } } });
+        }
+
+        // 3. VideoFX (Reverse)
+        if (intent.videoFX && intent.videoFX.reverse) {
+            pipeline.push({ name: 'Reverse', intent: { videoFX: { reverse: intent.videoFX.reverse } } });
+        }
+
+        // 4. Zoom
+        if (intent.videoFX && intent.videoFX.zoom) {
+            pipeline.push({ name: 'Zoom', intent: { videoFX: { zoom: intent.videoFX.zoom } } });
+        }
+
+        // 5. Filter
+        if (intent.filter && intent.filter !== 'none') {
+            pipeline.push({ name: 'Filter', intent: { filter: intent.filter } });
+        }
+
+        // 6. Subtitles (Burning)
+        if (intent.subtitles) {
+            pipeline.push({ name: 'Subtitles', intent: { subtitles: true } });
+        }
+
+        // 7. Resize
+        if (intent.resize) {
+            pipeline.push({ name: 'Resize', intent: { resize: intent.resize } });
+        }
+
+        // 8. Swap Audio
+        if (intent.swapAudio) {
+            pipeline.push({ name: 'SwapAudio', intent: { swapAudio: intent.swapAudio } });
+        }
+
+        // 9. Simple Trim (if not covered by other FX) - tricky if already processed.
+        // If pipeline is empty, check for simple trim.
+        // Or if simple trim exists and acts as a master trim.
+        if (intent.trim && (intent.trim.start !== null || intent.trim.end !== null)) {
+            // Assuming Trim is master trim, maybe do it first? Or last?
+            // Often better First to save processing.
+            pipeline.unshift({ name: 'Trim', intent: { trim: intent.trim } });
+        }
+
+        if (pipeline.length === 0) {
+            log('No operations detected. Copying file...');
+            const finalPath = path.join(__dirname, '../temp', `output_${jobId}.mp4`);
+            fs.copySync(currentInputPath, finalPath);
+            job.status = 'completed';
+            job.progress = 100;
+            job.outputPath = finalPath;
+            return;
+        }
+
+        log(`Pipeline stages: ${pipeline.map(p => p.name).join(' -> ')}`);
+
+        // --- PIPELINE EXECUTION ---
+        let tempFiles = [];
+
+        for (let i = 0; i < pipeline.length; i++) {
+            const stage = pipeline[i];
+            const isLast = i === pipeline.length - 1;
+            log(`[Stage ${i + 1}/${pipeline.length}] Executing ${stage.name}...`);
+
+            const stageOutputPath = isLast
+                ? path.join(__dirname, '../temp', `output_${jobId}.mp4`)
+                : path.join(__dirname, '../temp', `temp_${jobId}_${i}.mp4`);
+
+            // Build args for this specific atomic intent
+            // Merge options if needed (e.g. subtitles path)
+            const args = buildFFmpegArgs(currentInputPath, stageOutputPath, stage.intent, options);
+
+            await executeFFmpeg(args, jobId, (progressObj) => {
+                // Calculate Scaled Progress
+                // Each stage contributes 1/N to total
+                const stageWeight = 100 / pipeline.length;
+                const stageBase = i * stageWeight;
+
+                // Estimate stage progress
+                // Note: duration might change (cut/speed), so this is rough.
+                let percent = 0;
+                if (job.metadata.duration > 0) {
+                    percent = Math.min(100, Math.round((progressObj.time / job.metadata.duration) * 100));
+                }
+
+                job.progress = Math.round(stageBase + (percent * (stageWeight / 100)));
+            });
+
+            if (!isLast) {
+                tempFiles.push(stageOutputPath);
+                currentInputPath = stageOutputPath;
+                // Update metadata for next step (size/duration might have changed)
+                try {
+                    const newMeta = await getMetadata(currentInputPath);
+                    job.metadata = newMeta; // Update for next step calculations
+                    options.metadata = newMeta;
+                } catch (e) {
+                    log(`Warning: Metadata probe failed for intermediate step.`);
+                }
+            } else {
+                job.outputPath = stageOutputPath;
             }
-        });
+        }
+
+        // Cleanup intermediate files
+        log('Cleaning up intermediate files...');
+        for (const f of tempFiles) {
+            fs.remove(f).catch(e => log(`Failed to delete temp ${f}`));
+        }
 
         job.status = 'completed';
         job.progress = 100;
-        job.outputPath = outputPath;
         log('Processing complete.');
 
     } catch (err) {

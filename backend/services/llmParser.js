@@ -75,21 +75,59 @@ CONTEXT RESOLUTION RULES:
 const parsePromptWithLLM = async (prompt, context = "") => {
   logger.info(`[LLM] Receiving prompt: "${prompt}" with context: "${context}"`);
 
+  let intent;
+  let source = 'LLM';
+
   if (!API_KEY || API_KEY.includes('your_')) {
     logger.warn('[LLM] No valid API KEY found in .env (LLM_API_KEY). Using Mock mode (Limited capabilities).');
-    return parseMock(prompt, context);
+    source = 'Mock';
+    intent = await parseMock(prompt, context);
+  } else {
+    try {
+      if (PROVIDER === 'gemini') {
+        intent = await callGemini(prompt, context);
+      } else {
+        intent = await callOpenAI(prompt, context);
+      }
+    } catch (error) {
+      logger.error(`[LLM] Request failed: ${error.message}. Falling back to mock.`);
+      source = 'MockFallback';
+      intent = await parseMock(prompt, context);
+    }
   }
 
-  try {
-    if (PROVIDER === 'gemini') {
-      return await callGemini(prompt, context);
-    } else {
-      return await callOpenAI(prompt, context);
+  // --- SANITIZATION & SAFEGUARDS ---
+  // Fix: Prevent "resize" hallucination when user only asks for speed/trim
+  if (intent.resize) {
+    // Keywords that strongly suggest a resize intent
+    const strongKeywords = ['resize', 'aspect', 'ratio', 'crop', 'format', 'square', 'landscape', 'portrait', 'vertical', 'horizontal', 'reel', 'story', 'post', 'youtube', 'tiktok', 'instagram'];
+
+    // Ratio keywords needing strict matching (to avoid "1:10" matching "1:1")
+    const ratioKeywords = ['16:9', '9:16', '1:1'];
+
+    const lowerPrompt = prompt.toLowerCase();
+
+    // 1. Check strong keywords (simple substring OK for these unique words)
+    const hasStrongKeyword = strongKeywords.some(kw => lowerPrompt.includes(kw));
+
+    // 2. Check ratio keywords with regex to avoid timestamp partial matches
+    // Matches "1:1" but not "1:10", "11:1", etc.
+    const hasRatioKeyword = ratioKeywords.some(kw => {
+      // Escape the colon for regex
+      const escapedKw = kw.replace(':', '\\:');
+      // Look behind: space or start of string
+      // Look ahead: space, end of string, or non-digit
+      const regex = new RegExp(`(^|\\s|[^\\d])${escapedKw}($|\\s|[^\\d])`);
+      return regex.test(lowerPrompt);
+    });
+
+    if (!hasStrongKeyword && !hasRatioKeyword) {
+      logger.warn(`[LLM-Sanitize][${source}] detected resize intent "${intent.resize}" without explicit keywords in prompt. Suppressing resize.`);
+      intent.resize = null;
     }
-  } catch (error) {
-    logger.error(`[LLM] Request failed: ${error.message}. Falling back to mock.`);
-    return parseMock(prompt, context);
   }
+
+  return intent;
 };
 
 const callGemini = async (prompt, context) => {
@@ -180,8 +218,10 @@ const callOpenAI = async (prompt, context) => {
 };
 
 const parseMock = async (prompt, context = "") => {
-  logger.info('[MockLLM] Using heuristic fallback.');
-  const mockResponse = {
+  logger.info('[MockLLM] Using smart heuristic parser.');
+
+  // Base Response
+  const response = {
     swapAudio: null,
     trim: { start: null, end: null },
     silenceRemoval: false,
@@ -192,180 +232,171 @@ const parseMock = async (prompt, context = "") => {
     export: 'mp4'
   };
 
-  const p = prompt.toLowerCase();
-
-  // Extract Duration from Context
-  // Context format: "Video Context: Duration 172.06 seconds. Resolution 1280x720."
-  let duration = 0;
-  const durationMatch = context.match(/Duration (\d+(?:\.\d+)?) seconds/);
-  if (durationMatch) {
-    duration = parseFloat(durationMatch[1]);
-  }
-
-  const styles = ['cinematic', 'grayscale', 'sepia', 'retro', 'warm', 'cool', 'vibrant'];
-  styles.forEach(style => {
-    if (p.includes(style)) {
-      mockResponse.filter.style = style;
-    }
-  });
-  if (p.includes('black and white')) mockResponse.filter.style = 'grayscale';
-  if (p.includes('old school') || p.includes('vintage')) mockResponse.filter.style = 'retro';
-  if (p.includes('silence')) mockResponse.silenceRemoval = true;
-  if (p.includes('subtitle') || p.includes('caption')) mockResponse.subtitles = true;
-
-  // Resize / Aspect Ratio
-  if (p.includes('9:16') || p.includes('reel') || p.includes('tiktok') || p.includes('short') || p.includes('portrait')) mockResponse.resize = '9:16';
-  else if (p.includes('1:1') || p.includes('square') || p.includes('post') || p.includes('instagram')) mockResponse.resize = '1:1';
-  else if (p.includes('16:9') || p.includes('youtube') || p.includes('landscape') || p.includes('tv') || p.includes('wide')) mockResponse.resize = '16:9';
-  else if (p.includes('original') || p.includes('same size') || p.includes('no crop') || p.includes('full size')) mockResponse.resize = 'original';
-
-  if (p.includes('reverse') || p.includes('backwards')) mockResponse.videoFX.reverse = true;
-
-  // Improved Trim/Reverse Logic
-
-  // Regex Patterns
-  // 1. "trim/from X to Y" or "between X and Y"
-  const rangeMatch = p.match(/(?:from|starting|trim|between) (\d+):?(\d+)?(?:s)?\s*(?:to|until|-|and|&)\s*(\d+):?(\d+)?(?:s)?/);
-
-  // 2. "last X seconds"
-  const lastMatch = p.match(/last (\d+)(?:s| seconds)?/);
-
-  // 3. "first X seconds"
-  const firstMatch = p.match(/(?:first|start) (\d+)(?:s| seconds)?/);
-
-  let start = null;
-  let end = null;
-
   // Helper to parse "MM:SS" or "SS"
   const parseTime = (m, s) => {
     if (s) return parseInt(m) * 60 + parseInt(s);
     return parseInt(m);
   };
 
-  if (rangeMatch) {
-    start = parseTime(rangeMatch[1], rangeMatch[2]);
-    end = parseTime(rangeMatch[3], rangeMatch[4]);
-  } else if (lastMatch && duration > 0) {
-    const seconds = parseInt(lastMatch[1]);
-    start = Math.max(0, duration - seconds);
-    end = duration;
-  } else if (firstMatch) {
-    // "First X seconds" - Check context verb
-    const seconds = parseInt(firstMatch[1]);
+  // Extract Duration from Context
+  let duration = 0;
+  const durationMatch = context.match(/Duration (\d+(?:\.\d+)?) seconds/);
+  if (durationMatch) {
+    duration = parseFloat(durationMatch[1]);
+  }
 
-    // Check if preceded by negative verbs (remove, cut, trim, delete)
-    const negativeVerb = p.match(/(?:remove|cut|delete|trim)\s*(?:the\s*)?first/);
-    if (negativeVerb) {
-      // "Remove first X" -> Remove 0 to X
-      mockResponse.videoFX.remove = { start: 0, end: seconds };
-      start = null; // Do not apply trim
-      end = null;
-    } else {
-      // "Keep first X" (default) -> Keep 0 to X
+  // Split prompt into clauses
+  // Delimiters: " and ", ". ", ", ", " then ", " & "
+  // We use a regex to split but keep the flow legitimate
+  const clauses = prompt.toLowerCase().split(/(?: and |\. |\, | then | & )/);
+
+  // Helper to parse a single clause
+  const parseClause = (text) => {
+    const intent = {
+      // Partial updates
+    };
+
+    // 1. Time Range Extraction (Clause-Specific)
+    let start = null;
+    let end = null;
+
+    // "from X to Y", "between X and Y"
+    const rangeMatch = text.match(/(?:from|starting|trim|between|at) (\d+):?(\d+)?(?:s)?\s*(?:to|until|-|and|&)\s*(\d+):?(\d+)?(?:s)?/);
+    if (rangeMatch) {
+      start = parseTime(rangeMatch[1], rangeMatch[2]);
+      end = parseTime(rangeMatch[3], rangeMatch[4]);
+    }
+
+    // "last N seconds"
+    const lastMatch = text.match(/last (\d+)(?:s| seconds)?/);
+    if (lastMatch && duration > 0) {
+      const seconds = parseInt(lastMatch[1]);
+      start = Math.max(0, duration - seconds);
+      end = duration;
+    }
+
+    // "first N seconds"
+    const firstMatch = text.match(/(?:first|start) (\d+)(?:s| seconds)?/);
+    if (firstMatch) {
       start = 0;
-      end = seconds;
+      end = parseInt(firstMatch[1]);
     }
-  } else {
-    // Fallback legacy
-    const simpleMatch = p.match(/trim (?:first )?(\d+)/);
-    // Be careful: "trim 10" might mean remove 10? Assuming "trim to 10" for legacy unless specified
-    if (simpleMatch) start = parseInt(simpleMatch[1]);
+
+    // 2. Identify Action
+
+    // A. Filter
+    const styles = ['cinematic', 'grayscale', 'sepia', 'retro', 'warm', 'cool', 'vibrant'];
+    let style = 'none';
+    styles.forEach(s => { if (text.includes(s)) style = s; });
+    if (text.includes('black and white')) style = 'grayscale';
+    if (text.includes('old school') || text.includes('vintage')) style = 'retro';
+
+    if (style !== 'none') {
+      intent.filter = { style, start, end: end || duration };
+    }
+
+    // B. Speed
+    // Distinguish "zoom 3x" vs "speed 3x" vs "3x" (default to speed if ambiguous?)
+    // Logic: If 'zoom' word is in clause, treat 'x' as zoom factor.
+    // If 'speed', 'fast', 'slow' is in clause, treat 'x' as speed factor.
+
+    const hasZoom = text.includes('zoom') || text.includes('crop') || text.includes('punch');
+    const hasSpeed = text.includes('speed') || text.includes('fast') || text.includes('slow') || text.includes('motion');
+
+    const factorMatch = text.match(/(\d+(?:\.\d+)?)x/);
+    let factor = null;
+    if (factorMatch) factor = parseFloat(factorMatch[1]);
+
+    if (hasSpeed) {
+      let speedFactor = factor || 1.0;
+      if (!factor) {
+        if (text.includes('slow')) speedFactor = 0.5;
+        if (text.includes('fast')) speedFactor = 2.0;
+      }
+      intent.videoFX = intent.videoFX || {};
+      intent.videoFX.speed = { factor: speedFactor, start: start || 0, end: end || duration };
+    }
+
+    // C. Zoom
+    if (hasZoom) {
+      let zoomFactor = factor || 1.5;
+      intent.videoFX = intent.videoFX || {};
+      intent.videoFX.zoom = { factor: zoomFactor, start: start || 0, end: end || duration };
+    }
+
+    // D. Reverse
+    if (text.includes('reverse') || text.includes('backwards')) {
+      intent.videoFX = intent.videoFX || {};
+      if (start !== null) {
+        intent.videoFX.reverse = { start, end: end || duration };
+      } else {
+        intent.videoFX.reverse = true;
+      }
+    }
+
+    // E. Remove/Cut
+    // "remove", "cut out", "delete"
+    if (text.includes('remove') || text.includes('cut') || text.includes('delete')) {
+      if (start !== null && end !== null) {
+        intent.videoFX = intent.videoFX || {};
+        intent.videoFX.remove = { start, end };
+      }
+    }
+
+    // F. Global Flags (Silence, Subtitles, Resize) - valid in any clause
+    if (text.includes('silence')) intent.silenceRemoval = true;
+    if (text.includes('subtitle') || text.includes('caption')) intent.subtitles = true;
+
+    // Resize (Checked here, but sanitized globally later)
+    if (text.includes('9:16') || text.includes('reel') || text.includes('tiktok') || text.includes('portrait')) intent.resize = '9:16';
+    else if (text.includes('1:1') || text.includes('square') || text.includes('post') || text.includes('instagram')) intent.resize = '1:1';
+    else if (text.includes('16:9') || text.includes('youtube') || text.includes('landscape')) intent.resize = '16:9';
+    else if (text.includes('original')) intent.resize = 'original';
+
+    return intent;
+  };
+
+  // Process Clauses
+  for (const clause of clauses) {
+    if (!clause.trim()) continue;
+    const partial = parseClause(clause);
+
+    // Merge
+    if (partial.filter) response.filter = partial.filter;
+    if (partial.resize) response.resize = partial.resize;
+    if (partial.silenceRemoval) response.silenceRemoval = true;
+    if (partial.subtitles) response.subtitles = true;
+
+    if (partial.videoFX) {
+      if (partial.videoFX.speed) response.videoFX.speed = partial.videoFX.speed;
+      if (partial.videoFX.zoom) response.videoFX.zoom = partial.videoFX.zoom;
+      if (partial.videoFX.remove) response.videoFX.remove = partial.videoFX.remove;
+      if (partial.videoFX.reverse) response.videoFX.reverse = partial.videoFX.reverse;
+    }
   }
 
-  // Apply to Trim OR Reverse
-  // Apply to Trim OR Reverse OR Filter (if style is set)
-  if (start !== null) {
-    if (mockResponse.videoFX.reverse) {
-      // ... (Reverse logic) ...
-      mockResponse.videoFX.reverse = { start, end: end || duration };
-    } else if (mockResponse.filter.style !== 'none') {
-      // Filter Timestamp Logic
-      mockResponse.filter.start = start;
-      mockResponse.filter.end = end || duration;
-    } else {
-      // Normal Trim Intent
-      mockResponse.trim.start = start;
-      mockResponse.trim.end = end;
+  // Default Trim fallback ONLY if no effects and simple trim detected in full prompt
+  // But clause-based is safer. If user said "trim from 0 to 10", parseClause didn't catch "trim" as specific action above (only text.match).
+  // Let's check if we have a "bare" trim in any clause without other FX.
+
+  if (!response.videoFX.speed && !response.videoFX.zoom && !response.videoFX.remove && !response.videoFX.reverse && response.filter.style === 'none') {
+    // Check for standalone trim intent
+    const simpleMatch = prompt.toLowerCase().match(/(?:trim|from) (\d+)(?:[^\d]|$)/);
+    // Simpler: iterate clauses again? No, let's keep it simple.
+    // If we have a time range but no FX, assign to trim?
+    // Actually, let's look at the first clause for a "master trim".
+    const firstClause = clauses[0];
+    const rangeMatch = firstClause.match(/(?:from|starting|trim|between) (\d+):?(\d+)?(?:s)?\s*(?:to|until|-|and|&)\s*(\d+):?(\d+)?(?:s)?/);
+    if (rangeMatch && !response.videoFX.speed) { // Avoid overwriting if speed/etc exists
+      const s = parseTime(rangeMatch[1], rangeMatch[2]);
+      const e = parseTime(rangeMatch[3], rangeMatch[4]);
+      response.trim.start = s;
+      response.trim.end = e;
     }
-  }
-
-  // Check for Speed Intent
-  // "2x speed", "slow motion", "half speed", "speed up", "slow down"
-  const speedMatch = p.match(/(\d+(?:\.\d+)?)x/); // e.g. "2x"
-  const slowMatch = p.match(/(?:slow|motion)/);
-  const fastMatch = p.match(/(?:fast|speed up)/);
-
-  if (speedMatch || slowMatch || fastMatch) {
-    let factor = 1.0;
-    if (speedMatch) factor = parseFloat(speedMatch[1]);
-    else if (slowMatch) factor = 0.5;
-    else if (fastMatch) factor = 2.0;
-
-    // Determine range
-    let s = start !== null ? start : 0;
-    let e = end !== null ? end : duration;
-
-    if (s === 0 && e === 0 && duration > 0) e = duration;
-
-    mockResponse.videoFX.speed = {
-      factor: factor,
-      start: s,
-      end: e
-    };
-
-    // Clear trim if it was just inferred for the speed duration (unless it was explicitly a trim request)
-    // Since this is a simple mock, we prioritize the speed effect over simple trim if both inferred from same text.
-    if (start !== null && !mockResponse.videoFX.reverse) {
-      mockResponse.trim.start = null;
-      mockResponse.trim.end = null;
-    }
-  }
-
-  // Check for Remove/Cut Intent
-  // "remove between X and Y", "cut out X to Y", "delete from X to Y"
-  const removeMatch = p.match(/(?:remove|cut|delete).*(?:from|between|starting)?.*?(\d+):?(\d+)?(?:s)?.*(?:to|and|until).*?(\d+):?(\d+)?(?:s)?/);
-
-  if (removeMatch) {
-    const s = parseTime(removeMatch[1], removeMatch[2]);
-    const e = parseTime(removeMatch[3], removeMatch[4]);
-
-    mockResponse.videoFX.remove = {
-      start: s,
-      end: e
-    };
-
-    // Clear trim if inferred
-    if (start !== null) {
-      mockResponse.trim.start = null;
-      mockResponse.trim.end = null;
-    }
-  }
-
-  // Zoom / Crop / Punch In logic
-  if ((p.includes('zoom') || p.includes('crop') || p.includes('punch') || p.includes('close up'))) {
-    // 1. Check for specific range
-    // "zoom from 5s to 10s"
-    let zStart = 0;
-    let zEnd = duration;
-
-    const zRange = p.match(/(?:from|between) (\d+):?(\d+)?(?:seconds|secs|sec|s)?\s*(?:to|and|-)\s*(\d+):?(\d+)?(?:seconds|secs|sec|s)?/);
-    if (zRange) {
-      zStart = parseTime(zRange[1], zRange[2]);
-      zEnd = parseTime(zRange[3], zRange[4]);
-    } else if (start !== null) {
-      // Fallback to the general trim/time inference if specific zoom regex fails
-      zStart = start;
-      zEnd = end || duration;
-      // Clear trim intent since it's actually a zoom
-      mockResponse.trim.start = null;
-      mockResponse.trim.end = null;
-    }
-
-    mockResponse.videoFX.zoom = { factor: 1.5, start: zStart, end: zEnd };
   }
 
   await new Promise(r => setTimeout(r, 500));
-  return mockResponse;
+  return response;
 }
 
 module.exports = { parsePromptWithLLM, SYSTEM_PROMPT };
