@@ -23,7 +23,7 @@ const executeFFmpeg = (commandArgs, jobId, onProgress) => {
 
         ffmpeg.stderr.on('data', (data) => {
             const output = data.toString();
-            // logger.info(`[${jobId}] FFmpeg stderr: ${output}`); // Verbose
+            logger.info(`[${jobId}] FFmpeg stderr: ${output}`); // Verbose enabled
 
             // Parse time
             const timeMatch = output.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);

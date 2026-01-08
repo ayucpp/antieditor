@@ -29,12 +29,30 @@ Intent Schema (Strict)
   },
   "silenceRemoval": boolean,
   "subtitles": boolean,
-  "filter": "cinematic" | "grayscale" | "none",
-  "resize": "9:16" | "1:1" | "16:9" | null,
+  "filter": {
+      "style": "cinematic" | "grayscale" | "sepia" | "retro" | "warm" | "cool" | "vibrant" | "none",
+      "start": number | null,
+      "end": number | null
+  } | "none",
+  "resize": "9:16" | "1:1" | "16:9" | "youtube" | "reels" | "square" | "original" | null,
   "export": "mp4"
 }
   "videoFX": {
-    "reverse": boolean
+    "reverse": boolean | { "start": number, "end": number },
+    "speed": {
+       "factor": number,
+       "start": number,
+       "end": number
+    },
+    "remove": {
+       "start": number,
+       "end": number
+    },
+    "zoom": {
+       "factor": number,
+       "start": number,
+       "end": number
+    }
   },
   "export": "mp4"
 }
@@ -168,9 +186,9 @@ const parseMock = async (prompt, context = "") => {
     trim: { start: null, end: null },
     silenceRemoval: false,
     subtitles: false,
-    filter: 'none',
+    filter: { style: 'none', start: null, end: null },
     resize: null,
-    videoFX: { reverse: false },
+    videoFX: { reverse: false, speed: null, remove: null, zoom: null },
     export: 'mp4'
   };
 
@@ -184,13 +202,23 @@ const parseMock = async (prompt, context = "") => {
     duration = parseFloat(durationMatch[1]);
   }
 
-  if (p.includes('cinematic')) mockResponse.filter = 'cinematic';
-  if (p.includes('grayscale')) mockResponse.filter = 'grayscale';
+  const styles = ['cinematic', 'grayscale', 'sepia', 'retro', 'warm', 'cool', 'vibrant'];
+  styles.forEach(style => {
+    if (p.includes(style)) {
+      mockResponse.filter.style = style;
+    }
+  });
+  if (p.includes('black and white')) mockResponse.filter.style = 'grayscale';
+  if (p.includes('old school') || p.includes('vintage')) mockResponse.filter.style = 'retro';
   if (p.includes('silence')) mockResponse.silenceRemoval = true;
   if (p.includes('subtitle') || p.includes('caption')) mockResponse.subtitles = true;
-  if (p.includes('9:16') || p.includes('reel') || p.includes('short')) mockResponse.resize = '9:16';
-  if (p.includes('1:1') || p.includes('square')) mockResponse.resize = '1:1';
-  if (p.includes('16:9') || p.includes('landscape')) mockResponse.resize = '16:9';
+
+  // Resize / Aspect Ratio
+  if (p.includes('9:16') || p.includes('reel') || p.includes('tiktok') || p.includes('short') || p.includes('portrait')) mockResponse.resize = '9:16';
+  else if (p.includes('1:1') || p.includes('square') || p.includes('post') || p.includes('instagram')) mockResponse.resize = '1:1';
+  else if (p.includes('16:9') || p.includes('youtube') || p.includes('landscape') || p.includes('tv') || p.includes('wide')) mockResponse.resize = '16:9';
+  else if (p.includes('original') || p.includes('same size') || p.includes('no crop') || p.includes('full size')) mockResponse.resize = 'original';
+
   if (p.includes('reverse') || p.includes('backwards')) mockResponse.videoFX.reverse = true;
 
   // Improved Trim/Reverse Logic
@@ -232,16 +260,95 @@ const parseMock = async (prompt, context = "") => {
   }
 
   // Apply to Trim OR Reverse
+  // Apply to Trim OR Reverse OR Filter (if style is set)
   if (start !== null) {
     if (mockResponse.videoFX.reverse) {
-      // In-Place Reverse Intent
-      mockResponse.videoFX.reverse = { start, end: end || duration }; // Default end to duration if not set (though regex usually catches pair)
-      // Do NOT set trim, so we maintain context.
+      // ... (Reverse logic) ...
+      mockResponse.videoFX.reverse = { start, end: end || duration };
+    } else if (mockResponse.filter.style !== 'none') {
+      // Filter Timestamp Logic
+      mockResponse.filter.start = start;
+      mockResponse.filter.end = end || duration;
     } else {
       // Normal Trim Intent
       mockResponse.trim.start = start;
       mockResponse.trim.end = end;
     }
+  }
+
+  // Check for Speed Intent
+  // "2x speed", "slow motion", "half speed", "speed up", "slow down"
+  const speedMatch = p.match(/(\d+(?:\.\d+)?)x/); // e.g. "2x"
+  const slowMatch = p.match(/(?:slow|motion)/);
+  const fastMatch = p.match(/(?:fast|speed up)/);
+
+  if (speedMatch || slowMatch || fastMatch) {
+    let factor = 1.0;
+    if (speedMatch) factor = parseFloat(speedMatch[1]);
+    else if (slowMatch) factor = 0.5;
+    else if (fastMatch) factor = 2.0;
+
+    // Determine range
+    let s = start !== null ? start : 0;
+    let e = end !== null ? end : duration;
+
+    if (s === 0 && e === 0 && duration > 0) e = duration;
+
+    mockResponse.videoFX.speed = {
+      factor: factor,
+      start: s,
+      end: e
+    };
+
+    // Clear trim if it was just inferred for the speed duration (unless it was explicitly a trim request)
+    // Since this is a simple mock, we prioritize the speed effect over simple trim if both inferred from same text.
+    if (start !== null && !mockResponse.videoFX.reverse) {
+      mockResponse.trim.start = null;
+      mockResponse.trim.end = null;
+    }
+  }
+
+  // Check for Remove/Cut Intent
+  // "remove between X and Y", "cut out X to Y", "delete from X to Y"
+  const removeMatch = p.match(/(?:remove|cut|delete).*(?:from|between|starting)?.*?(\d+):?(\d+)?(?:s)?.*(?:to|and|until).*?(\d+):?(\d+)?(?:s)?/);
+
+  if (removeMatch) {
+    const s = parseTime(removeMatch[1], removeMatch[2]);
+    const e = parseTime(removeMatch[3], removeMatch[4]);
+
+    mockResponse.videoFX.remove = {
+      start: s,
+      end: e
+    };
+
+    // Clear trim if inferred
+    if (start !== null) {
+      mockResponse.trim.start = null;
+      mockResponse.trim.end = null;
+    }
+  }
+
+  // Zoom / Crop / Punch In logic
+  if ((p.includes('zoom') || p.includes('crop') || p.includes('punch') || p.includes('close up'))) {
+    // 1. Check for specific range
+    // "zoom from 5s to 10s"
+    let zStart = 0;
+    let zEnd = duration;
+
+    const zRange = p.match(/(?:from|between) (\d+):?(\d+)?(?:seconds|secs|sec|s)?\s*(?:to|and|-)\s*(\d+):?(\d+)?(?:seconds|secs|sec|s)?/);
+    if (zRange) {
+      zStart = parseTime(zRange[1], zRange[2]);
+      zEnd = parseTime(zRange[3], zRange[4]);
+    } else if (start !== null) {
+      // Fallback to the general trim/time inference if specific zoom regex fails
+      zStart = start;
+      zEnd = end || duration;
+      // Clear trim intent since it's actually a zoom
+      mockResponse.trim.start = null;
+      mockResponse.trim.end = null;
+    }
+
+    mockResponse.videoFX.zoom = { factor: 1.5, start: zStart, end: zEnd };
   }
 
   await new Promise(r => setTimeout(r, 500));

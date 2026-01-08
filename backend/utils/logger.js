@@ -1,7 +1,17 @@
+const fs = require('fs');
+const path = require('path');
+const logFile = path.join(__dirname, '../debug.log');
+
+const writeLog = (level, msg) => {
+  const line = `[${new Date().toISOString()}] [${level}] ${msg}\n`;
+  console.log(line.trim());
+  try { fs.appendFileSync(logFile, line); } catch (e) { }
+};
+
 const logger = {
-  info: (msg) => console.log(`[${new Date().toISOString()}] [INFO] ${msg}`),
-  warn: (msg) => console.warn(`[${new Date().toISOString()}] [WARN] ${msg}`),
-  error: (msg) => console.error(`[${new Date().toISOString()}] [ERROR] ${msg}`),
+  info: (msg) => writeLog('INFO', msg),
+  warn: (msg) => writeLog('WARN', msg),
+  error: (msg) => writeLog('ERROR', msg),
 };
 
 module.exports = logger;

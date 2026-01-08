@@ -1,6 +1,7 @@
 "use client"
 
-import { Terminal, Zap, Activity } from "lucide-react"
+import { Terminal, Zap, Activity, Download } from "lucide-react"
+import { ExportCard } from "./export-card"
 
 interface SystemIntelligenceProps {
   interpretation: string | null
@@ -8,6 +9,9 @@ interface SystemIntelligenceProps {
   executionLogs: string[]
   progress: number
   isProcessing: boolean
+  exportFormat: string | null
+  onExportSelect: (format: string | null) => void
+  videoUrl: string | null
 }
 
 export function SystemIntelligence({
@@ -16,6 +20,9 @@ export function SystemIntelligence({
   executionLogs,
   progress,
   isProcessing,
+  exportFormat,
+  onExportSelect,
+  videoUrl,
 }: SystemIntelligenceProps) {
   return (
     <div className="p-6 space-y-6">
@@ -34,22 +41,6 @@ export function SystemIntelligence({
         </div>
       </section>
 
-      {/* FFmpeg Command Preview */}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2 text-xs text-white/60 uppercase tracking-wide">
-          <Terminal className="w-3.5 h-3.5" />
-          <span>FFmpeg Command</span>
-        </div>
-        <div className="rounded-lg bg-[#0a0a0f] border border-white/10 p-4 min-h-[100px] overflow-x-auto">
-          {ffmpegCommand ? (
-            <pre className="text-xs font-mono text-green-400/90 leading-relaxed whitespace-pre-wrap break-all">
-              {ffmpegCommand}
-            </pre>
-          ) : (
-            <p className="text-xs font-mono text-white/30 italic">Command will appear here</p>
-          )}
-        </div>
-      </section>
 
       {/* Progress Indicator */}
       {isProcessing && (
@@ -89,6 +80,23 @@ export function SystemIntelligence({
             <p className="text-white/30 italic">Logs will appear here during execution</p>
           )}
         </div>
+      </section>
+
+      {/* Export Options */}
+      <section className="space-y-3 pt-4 border-t border-white/5">
+        <ExportCard selectedFormat={exportFormat} onSelect={onExportSelect} />
+
+        {/* Download Button */}
+        {videoUrl && (
+          <a
+            href={videoUrl}
+            download={`export-${Date.now()}.mp4`}
+            className="flex items-center justify-center gap-2 w-full py-3 rounded-lg bg-green-500/10 hover:bg-green-500/20 border border-green-500/20 text-green-400 font-medium transition-all text-xs"
+          >
+            <Download className="w-4 h-4" />
+            <span>Download Video</span>
+          </a>
+        )}
       </section>
     </div>
   )

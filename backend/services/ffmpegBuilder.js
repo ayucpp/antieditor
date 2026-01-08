@@ -102,9 +102,15 @@ const buildFFmpegArgs = (inputPath, outputPath, intent, options = {}) => {
         const concatFilter = `${activeSegments.join('')}concat=n=${activeSegments.length}:v=0:a=1[outa]`;
         filters.push(concatFilter);
 
+        let finalV = '0:v';
+        if (videoFilters.length > 0) {
+            filters.push(`[0:v]${videoFilters.join(',')}[vfinal]`);
+            finalV = '[vfinal]';
+        }
+
         // Add to complex filter
         args.push('-filter_complex', filters.join(';'));
-        args.push('-map', '0:v'); // Copy video from input 0
+        args.push('-map', finalV); // Use new video map
         args.push('-map', '[outa]'); // Use new audio
 
         // Return early? Or allow other filters?
@@ -122,21 +128,101 @@ const buildFFmpegArgs = (inputPath, outputPath, intent, options = {}) => {
         audioFilters.push('silenceremove=start_periods=1:stop_periods=-1:start_threshold=-50dB:stop_threshold=-50dB');
     }
 
-    // 3. Filters
-    if (intent.filter === 'cinematic') {
-        videoFilters.push('eq=contrast=1.2:saturation=1.3');
-    } else if (intent.filter === 'grayscale') {
-        videoFilters.push('hue=s=0');
+    // 3. Filters (Color Grading)
+    if (intent.filter && intent.filter !== 'none') { // Check if filter exists
+        let style = 'none';
+        let start = null;
+        let end = null;
+
+        // Normalization
+        if (typeof intent.filter === 'string') {
+            style = intent.filter;
+        } else if (typeof intent.filter === 'object') {
+            style = intent.filter.style;
+            start = intent.filter.start;
+            end = intent.filter.end;
+        }
+
+        if (style !== 'none') {
+            // Map styles to FFmpeg filters
+            const filterMap = {
+                'cinematic': 'eq=contrast=1.2:saturation=1.3',
+                'grayscale': 'hue=s=0',
+                'sepia': 'colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131',
+                'retro': 'eq=contrast=0.85:saturation=0.6,colorbalance=rs=.2',
+                'warm': 'colorbalance=rs=.1:gs=-.1:bs=-.2',
+                'cool': 'colorbalance=bs=.1:rs=-.1',
+                'vibrant': 'eq=saturation=1.5:contrast=1.1'
+            };
+
+            const vf = filterMap[style];
+
+            if (vf) {
+                if (start !== null && end !== null) {
+                    // Partial Filter Application
+                    logger.info(`[FFmpegBuilder] Applying ${style} filter from ${start} to ${end}`);
+
+                    const complexFilters = [];
+                    const segments = [];
+
+                    // Segment 1: Pre-Filter
+                    if (start > 0) {
+                        complexFilters.push(`[0:v]trim=start=0:end=${start},setpts=PTS-STARTPTS[v1]`);
+                        complexFilters.push(`[0:a]atrim=start=0:end=${start},asetpts=PTS-STARTPTS[a1]`);
+                        segments.push({ v: '[v1]', a: '[a1]' });
+                    }
+
+                    // Segment 2: Filtered
+                    // Apply the color filter here
+                    complexFilters.push(`[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,${vf}[v2]`);
+                    complexFilters.push(`[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a2]`);
+                    segments.push({ v: '[v2]', a: '[a2]' });
+
+                    // Segment 3: Post-Filter
+                    complexFilters.push(`[0:v]trim=start=${end},setpts=PTS-STARTPTS[v3]`);
+                    complexFilters.push(`[0:a]atrim=start=${end},asetpts=PTS-STARTPTS[a3]`);
+                    segments.push({ v: '[v3]', a: '[a3]' });
+
+                    // Concatenation
+                    const inputs = segments.map(s => `${s.v}${s.a}`).join('');
+                    complexFilters.push(`${inputs}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
+
+                    let finalV = '[outv]';
+                    if (videoFilters.length > 0) {
+                        complexFilters.push(`[outv]${videoFilters.join(',')}[vfinal]`);
+                        finalV = '[vfinal]';
+                    }
+
+                    args.push('-filter_complex', complexFilters.join(';'));
+                    args.push('-map', finalV);
+                    args.push('-map', '[outa]');
+                    args.push(outputPath);
+                    return args; // Return early
+                } else {
+                    // Full Video Filter
+                    videoFilters.push(vf);
+                }
+            }
+        }
     }
 
-    // 4. Resize
-    if (intent.resize === '9:16') {
-        // Center crop to 9:16 (1080x1920)
-        videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920');
-    } else if (intent.resize === '1:1') {
-        videoFilters.push('scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080');
-    } else if (intent.resize === '16:9') {
-        videoFilters.push('scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080');
+    // 4. Resize (Smart Export)
+    const resizeObj = intent.resize;
+    if (resizeObj) {
+        if (resizeObj === '16:9' || resizeObj === 'youtube') {
+            // Smart Padding (Fit in Box) - 1920x1080
+            // force_original_aspect_ratio=decrease ensures it fits INSIDE 1920x1080
+            // pad fills the rest with black
+            videoFilters.push('scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2');
+        } else if (resizeObj === '9:16' || resizeObj === 'reels') {
+            // Smart Crop (Fill Box) - 1080x1920
+            // force_original_aspect_ratio=increase ensures it COVERS 1080x1920
+            // crop takes the center 1080x1920
+            videoFilters.push('scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920');
+        } else if (resizeObj === '1:1' || resizeObj === 'square') {
+            // Smart Crop (Fill Box) - 1080x1080
+            videoFilters.push('scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080');
+        }
     }
 
     // 5. Subtitles
@@ -183,8 +269,14 @@ const buildFFmpegArgs = (inputPath, outputPath, intent, options = {}) => {
             const inputs = segments.map(s => `${s.v}${s.a}`).join('');
             complexFilters.push(`${inputs}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
 
+            let finalV = '[outv]';
+            if (videoFilters.length > 0) {
+                complexFilters.push(`[outv]${videoFilters.join(',')}[vfinal]`);
+                finalV = '[vfinal]';
+            }
+
             args.push('-filter_complex', complexFilters.join(';'));
-            args.push('-map', '[outv]');
+            args.push('-map', finalV);
             args.push('-map', '[outa]');
             args.push(outputPath);
             return args; // Return early for complex op
@@ -193,6 +285,150 @@ const buildFFmpegArgs = (inputPath, outputPath, intent, options = {}) => {
             videoFilters.push('reverse');
             audioFilters.push('areverse');
         }
+    }
+
+    // 7. VideoFX (Speed)
+    if (intent.videoFX && intent.videoFX.speed) {
+        const { factor, start, end } = intent.videoFX.speed;
+        logger.info(`[FFmpegBuilder] Generating Speed filter: ${factor}x from ${start} to ${end}`);
+
+        const complexFilters = [];
+        const segments = [];
+
+        // Segment 1: Pre-Speed (0 to start)
+        if (start > 0) {
+            complexFilters.push(`[0:v]trim=start=0:end=${start},setpts=PTS-STARTPTS[v1]`);
+            complexFilters.push(`[0:a]atrim=start=0:end=${start},asetpts=PTS-STARTPTS[a1]`);
+            segments.push({ v: '[v1]', a: '[a1]' });
+        }
+
+        // Segment 2: Speed (start to end)
+        // Video Speed: faster means lower PTS (setpts=0.5*PTS for 2x speed)
+        const videoSpeedFilter = `setpts=${1 / factor}*PTS`;
+
+        // Audio Speed: limit atempo to 0.5 - 2.0 range, chain if needed
+        let audioSpeedFilters = [];
+        let f = factor;
+        while (f > 2.0) {
+            audioSpeedFilters.push('atempo=2.0');
+            f /= 2.0;
+        }
+        while (f < 0.5) {
+            audioSpeedFilters.push('atempo=0.5');
+            f /= 0.5;
+        }
+        audioSpeedFilters.push(`atempo=${f}`);
+        const audioSpeedChain = audioSpeedFilters.join(',');
+
+        complexFilters.push(`[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,${videoSpeedFilter}[v2]`);
+        complexFilters.push(`[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS,${audioSpeedChain}[a2]`);
+        segments.push({ v: '[v2]', a: '[a2]' });
+
+        // Segment 3: Post-Speed (end to EOD)
+        // We use a large number or just start=end to trim to end
+        complexFilters.push(`[0:v]trim=start=${end},setpts=PTS-STARTPTS[v3]`);
+        complexFilters.push(`[0:a]atrim=start=${end},asetpts=PTS-STARTPTS[a3]`);
+        segments.push({ v: '[v3]', a: '[a3]' });
+
+        // Concatenation
+        const inputs = segments.map(s => `${s.v}${s.a}`).join('');
+        complexFilters.push(`${inputs}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
+
+        let finalV = '[outv]';
+        if (videoFilters.length > 0) {
+            complexFilters.push(`[outv]${videoFilters.join(',')}[vfinal]`);
+            finalV = '[vfinal]';
+        }
+
+        args.push('-filter_complex', complexFilters.join(';'));
+        args.push('-map', finalV);
+        args.push('-map', '[outa]');
+        args.push(outputPath);
+        return args; // Return early for complex op
+    }
+
+    // 8. VideoFX (Remove / Cut)
+    if (intent.videoFX && intent.videoFX.remove) {
+        const { start, end } = intent.videoFX.remove;
+        logger.info(`[FFmpegBuilder] Generating Remove filter: remove ${start} to ${end}`);
+
+        const complexFilters = [];
+        const segments = [];
+
+        // Segment 1: Pre-Cut (0 to start)
+        if (start > 0) {
+            complexFilters.push(`[0:v]trim=start=0:end=${start},setpts=PTS-STARTPTS[v1]`);
+            complexFilters.push(`[0:a]atrim=start=0:end=${start},asetpts=PTS-STARTPTS[a1]`);
+            segments.push({ v: '[v1]', a: '[a1]' });
+        }
+
+        // Segment 2: Post-Cut (end to EOD)
+        complexFilters.push(`[0:v]trim=start=${end},setpts=PTS-STARTPTS[v2]`);
+        complexFilters.push(`[0:a]atrim=start=${end},asetpts=PTS-STARTPTS[a2]`);
+        segments.push({ v: '[v2]', a: '[a2]' });
+
+        // Concatenation
+        const inputs = segments.map(s => `${s.v}${s.a}`).join('');
+        complexFilters.push(`${inputs}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
+
+        let finalV = '[outv]';
+        if (videoFilters.length > 0) {
+            complexFilters.push(`[outv]${videoFilters.join(',')}[vfinal]`);
+            finalV = '[vfinal]';
+        }
+
+        args.push('-filter_complex', complexFilters.join(';'));
+        args.push('-map', finalV);
+        args.push('-map', '[outa]');
+        args.push(outputPath);
+        return args; // Return early
+    }
+
+    // 8. VideoFX (Zoom / Crop Segments)
+    if (intent.videoFX && intent.videoFX.zoom) {
+        const { factor, start, end } = intent.videoFX.zoom;
+        const zoomFactor = factor || 1.5;
+        logger.info(`[FFmpegBuilder] Generating Zoom filter: ${zoomFactor}x from ${start} to ${end}`);
+
+        const complexFilters = [];
+        const segments = [];
+
+        // 1. Pre-segment
+        if (start > 0) {
+            complexFilters.push(`[0:v]trim=start=0:end=${start},setpts=PTS-STARTPTS,setsar=1[v1]`);
+            complexFilters.push(`[0:a]atrim=start=0:end=${start},asetpts=PTS-STARTPTS[a1]`);
+            segments.push({ v: '[v1]', a: '[a1]' });
+        }
+
+        // 2. Middle (Zoomed)
+        // Filter: crop=iw/factor:ih/factor,scale=originalW:originalH
+        const targetW = options.metadata ? options.metadata.width : 'iw*' + zoomFactor; // Fallback if no metadata (risky but better than iw)
+        const targetH = options.metadata ? options.metadata.height : 'ih*' + zoomFactor;
+
+        complexFilters.push(`[0:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,crop=iw/${zoomFactor}:ih/${zoomFactor},scale=${targetW}:${targetH},setsar=1[v2]`);
+        complexFilters.push(`[0:a]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a2]`);
+        segments.push({ v: '[v2]', a: '[a2]' });
+
+        // 3. Post-segment
+        complexFilters.push(`[0:v]trim=start=${end},setpts=PTS-STARTPTS,setsar=1[v3]`);
+        complexFilters.push(`[0:a]atrim=start=${end},asetpts=PTS-STARTPTS[a3]`);
+        segments.push({ v: '[v3]', a: '[a3]' });
+
+        // 4. Concat
+        const inputs = segments.map(s => `${s.v}${s.a}`).join('');
+        complexFilters.push(`${inputs}concat=n=${segments.length}:v=1:a=1[outv][outa]`);
+
+        let finalV = '[outv]';
+        if (videoFilters.length > 0) {
+            complexFilters.push(`[outv]${videoFilters.join(',')}[vfinal]`);
+            finalV = '[vfinal]';
+        }
+
+        args.push('-filter_complex', complexFilters.join(';'));
+        args.push('-map', finalV);
+        args.push('-map', '[outa]');
+        args.push(outputPath);
+        return args;
     }
 
     // Construct Filter Complex

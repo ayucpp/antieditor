@@ -26,6 +26,9 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
     logger.info(`Server running on http://localhost:${PORT}`);
 
-    // Ensure temp dir exists
-    fs.ensureDirSync(path.join(__dirname, 'temp'));
+    // Ensure temp dir exists and is empty
+    const tempDir = path.join(__dirname, 'temp');
+    logger.info(`Cleaning temp directory: ${tempDir}`);
+    fs.emptyDirSync(tempDir);
+    fs.ensureDirSync(tempDir);
 });

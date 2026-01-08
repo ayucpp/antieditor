@@ -14,8 +14,15 @@ const intentSchema = z.object({
     }).nullable().optional().default({ start: null, end: null }),
     silenceRemoval: z.boolean().nullable().optional().default(false),
     subtitles: z.boolean().nullable().optional().default(false),
-    filter: z.enum(['cinematic', 'grayscale', 'none']).nullable().optional().default('none'),
-    resize: z.enum(['9:16', '1:1', '16:9']).nullable().optional().default(null),
+    filter: z.union([
+        z.enum(['cinematic', 'grayscale', 'sepia', 'retro', 'warm', 'cool', 'vibrant', 'none']),
+        z.object({
+            style: z.enum(['cinematic', 'grayscale', 'sepia', 'retro', 'warm', 'cool', 'vibrant', 'none']),
+            start: z.number().nullable(),
+            end: z.number().nullable()
+        })
+    ]).nullable().optional().default('none'),
+    resize: z.enum(['9:16', '1:1', '16:9', 'youtube', 'reels', 'square', 'original']).nullable().optional().default(null),
     videoFX: z.object({
         reverse: z.union([
             z.boolean(),
@@ -23,7 +30,21 @@ const intentSchema = z.object({
                 start: z.number(),
                 end: z.number()
             })
-        ])
+        ]).nullable().optional(),
+        speed: z.object({
+            factor: z.number(),
+            start: z.number(),
+            end: z.number()
+        }).nullable().optional(),
+        remove: z.object({
+            start: z.number(),
+            end: z.number()
+        }).nullable().optional(),
+        zoom: z.object({
+            factor: z.number().default(1.5),
+            start: z.number(),
+            end: z.number()
+        }).nullable().optional()
     }).nullable().optional(),
     export: z.literal('mp4'),
 }).strict(); // No additional keys allowed

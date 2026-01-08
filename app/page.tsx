@@ -5,10 +5,13 @@ import { VideoUploadZone } from "@/components/video-upload-zone"
 import { PromptPanel } from "@/components/prompt-panel"
 import { VideoPreview } from "@/components/video-preview"
 import { SystemIntelligence } from "@/components/system-intelligence"
+import { StyleCard } from "@/components/style-card"
+import { ExportCard } from "@/components/export-card"
 
 export default function VideoEditorPage() {
   // Frontend State
   const [videoFile, setVideoFile] = useState<File | null>(null)
+  const [exportFormat, setExportFormat] = useState<string | null>(null)
 
   // Real Backend State
   const [jobId, setJobId] = useState<string | null>(null)
@@ -80,26 +83,35 @@ export default function VideoEditorPage() {
     }
   }
 
-  const handlePromptExecute = async (promptText: string) => {
-    if (!jobId) {
-      setExecutionLogs(prev => [...prev, "❌ No video job ID found. Please re-upload."])
-      return
-    }
+  const handlePromptExecute = async (e?: React.FormEvent, overrideFormat?: string) => {
+    if (e) e.preventDefault()
 
-    setPrompt(promptText)
+    // Determine prompt and format
+    const activePrompt = overrideFormat ? `Export as ${overrideFormat}` : prompt
+    const activeFormat = overrideFormat || exportFormat
+
+    if (!activePrompt || !jobId) return
+
     setIsProcessing(true)
     setProgress(0)
+    setInterpretation(null)
     setExecutionLogs([])
 
     try {
-      // 1. Parse Prompt (Legacy)
+      // 1. Parse Intent (Legacy)
       setExecutionLogs(prev => [...prev, "• Sending prompt to LLM..."])
       const parseRes = await fetch(`${API_BASE}/parse-prompt`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: promptText, jobId: jobId })
+        body: JSON.stringify({
+          prompt: activePrompt,
+          jobId: jobId,
+          overrides: { resize: activeFormat } // Use activeFormat here
+        })
       })
-      if (!parseRes.ok) throw new Error('Prompt parsing failed')
+
+      if (!parseRes.ok) throw new Error('Failed to parse prompt')
+
       const intent = await parseRes.json()
       setInterpretation(JSON.stringify(intent, null, 2))
       setExecutionLogs(prev => [...prev, "• Intent parsed successfully"])
@@ -112,7 +124,10 @@ export default function VideoEditorPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jobId: jobId, intent })
       })
-      if (!processRes.ok) throw new Error('Processing start failed')
+      if (!processRes.ok) {
+        const errData = await processRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Processing start failed');
+      }
 
       const processData = await processRes.json()
       const activeJobId = processData.newJobId || jobId
@@ -144,7 +159,7 @@ export default function VideoEditorPage() {
               const newHistory = prev.slice(0, historyIndex + 1)
               newHistory.push({
                 url: newUrl,
-                prompt: promptText,
+                prompt: activePrompt,
                 timestamp: Date.now(),
                 jobId: activeJobId
               })
@@ -187,7 +202,18 @@ export default function VideoEditorPage() {
               onFilesSelected={(files) => { if (files.length > 0) handleVideoUpload(files[0]) }}
               hasFiles={!!videoFile}
             />
-            <PromptPanel onExecute={handlePromptExecute} isProcessing={isProcessing} disabled={!videoFile} />
+            {videoFile && (
+              <div className="px-6 py-4">
+                <StyleCard />
+              </div>
+            )}
+            <PromptPanel
+              prompt={prompt}
+              setPrompt={setPrompt}
+              onExecute={handlePromptExecute}
+              isProcessing={isProcessing}
+              disabled={!videoFile}
+            />
           </div>
         </div>
 
@@ -249,6 +275,12 @@ export default function VideoEditorPage() {
               executionLogs={executionLogs}
               progress={progress}
               isProcessing={isProcessing}
+              exportFormat={exportFormat}
+              onExportSelect={(fmt) => {
+                setExportFormat(fmt)
+                if (fmt) handlePromptExecute(undefined, fmt) // Auto-execute on select
+              }}
+              videoUrl={videoUrl}
             />
           </div>
         </div>

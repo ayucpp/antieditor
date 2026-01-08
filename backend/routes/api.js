@@ -94,6 +94,13 @@ router.post('/parse-prompt', async (req, res) => {
         // 1. LLM Parse
         const rawIntent = await parsePromptWithLLM(prompt, context);
 
+        // 1.5 Apply Overrides (from UI buttons)
+        if (req.body.overrides) {
+            if (req.body.overrides.resize) {
+                rawIntent.resize = req.body.overrides.resize;
+            }
+        }
+
         // 2. Validate
         try {
             const validatedIntent = validateIntent(rawIntent);
@@ -226,7 +233,10 @@ const processJob = async (jobId) => {
 
         const outputPath = path.join(__dirname, '../temp', `output_${jobId}.mp4`);
 
-        const options = {};
+        const options = {
+            metadata: job.metadata
+        };
+        logger.info(`[Debug] Job Metadata: ${JSON.stringify(job.metadata)}`);
 
         // Subtitles
         if (job.intent.subtitles) {

@@ -45,6 +45,8 @@ const getMetadata = (filePath) => {
                 const metadata = {
                     duration: parseFloat(data.format.duration),
                     resolution: `${videoStream.width}x${videoStream.height}`,
+                    width: videoStream.width,
+                    height: videoStream.height,
                     hasAudio: !!audioStream,
                     frameRate: videoStream.r_frame_rate // e.g., "30/1"
                 };
