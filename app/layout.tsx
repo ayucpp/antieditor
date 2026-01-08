@@ -8,25 +8,25 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Prompt Video Editor",
+  title: "Antieditor",
   description: "Cinematic prompt-based video editor",
   generator: "v0.app",
   icons: {
     icon: [
       {
-        url: "/icon-light-32x32.png",
+        url: "/logo.png",
         media: "(prefers-color-scheme: light)",
       },
       {
-        url: "/icon-dark-32x32.png",
+        url: "/logo.png",
         media: "(prefers-color-scheme: dark)",
       },
       {
-        url: "/icon.svg",
-        type: "image/svg+xml",
+        url: "/logo.png",
+        type: "image/png",
       },
     ],
-    apple: "/apple-icon.png",
+    apple: "/logo.png",
   },
 }
 

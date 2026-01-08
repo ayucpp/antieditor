@@ -250,12 +250,25 @@ const parseMock = async (prompt, context = "") => {
     start = Math.max(0, duration - seconds);
     end = duration;
   } else if (firstMatch) {
+    // "First X seconds" - Check context verb
     const seconds = parseInt(firstMatch[1]);
-    start = 0;
-    end = seconds;
+
+    // Check if preceded by negative verbs (remove, cut, trim, delete)
+    const negativeVerb = p.match(/(?:remove|cut|delete|trim)\s*(?:the\s*)?first/);
+    if (negativeVerb) {
+      // "Remove first X" -> Remove 0 to X
+      mockResponse.videoFX.remove = { start: 0, end: seconds };
+      start = null; // Do not apply trim
+      end = null;
+    } else {
+      // "Keep first X" (default) -> Keep 0 to X
+      start = 0;
+      end = seconds;
+    }
   } else {
     // Fallback legacy
     const simpleMatch = p.match(/trim (?:first )?(\d+)/);
+    // Be careful: "trim 10" might mean remove 10? Assuming "trim to 10" for legacy unless specified
     if (simpleMatch) start = parseInt(simpleMatch[1]);
   }
 

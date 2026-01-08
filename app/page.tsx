@@ -83,11 +83,17 @@ export default function VideoEditorPage() {
     }
   }
 
-  const handlePromptExecute = async (e?: React.FormEvent, overrideFormat?: string) => {
-    if (e) e.preventDefault()
+  const handlePromptExecute = async (eOrPrompt?: React.FormEvent | string, overrideFormat?: string) => {
+    // Handle Event vs String
+    if (eOrPrompt && typeof eOrPrompt === 'object' && 'preventDefault' in eOrPrompt) {
+      (eOrPrompt as React.FormEvent).preventDefault()
+    }
 
     // Determine prompt and format
-    const activePrompt = overrideFormat ? `Export as ${overrideFormat}` : prompt
+    let activePrompt = typeof eOrPrompt === 'string' ? eOrPrompt : prompt
+    if (overrideFormat) {
+      activePrompt = `Export as ${overrideFormat}`
+    }
     const activeFormat = overrideFormat || exportFormat
 
     if (!activePrompt || !jobId) return
@@ -193,8 +199,11 @@ export default function VideoEditorPage() {
       <div className="h-full grid grid-cols-[320px_1fr_360px] gap-0">
         {/* Left Panel - Input & Prompt */}
         <div className="h-full border-r border-white/5 bg-[#12121a] flex flex-col">
-          <div className="p-6 border-b border-white/5">
-            <h2 className="text-sm font-medium text-white/60 tracking-wide uppercase">Input</h2>
+          <div className="p-6 border-b border-white/5 flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-indigo-500/10 flex items-center justify-center border border-indigo-500/20">
+              <img src="/logo.png" alt="Antieditor" className="w-5 h-5 object-contain" />
+            </div>
+            <h1 className="text-sm font-bold text-white tracking-wide">Antieditor</h1>
           </div>
 
           <div className="flex-1 overflow-y-auto">

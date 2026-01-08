@@ -9,6 +9,8 @@ interface PromptPanelProps {
   onExecute: (prompt: string) => void
   isProcessing: boolean
   disabled: boolean
+  prompt: string
+  setPrompt: (value: string) => void
 }
 
 const SUGGESTIONS = [
@@ -19,8 +21,7 @@ const SUGGESTIONS = [
   "Extract first minute",
 ]
 
-export function PromptPanel({ onExecute, isProcessing, disabled }: PromptPanelProps) {
-  const [prompt, setPrompt] = useState("")
+export function PromptPanel({ onExecute, isProcessing, disabled, prompt, setPrompt }: PromptPanelProps) {
 
   const handleExecute = () => {
     if (prompt.trim() && !disabled) {
@@ -63,10 +64,9 @@ export function PromptPanel({ onExecute, isProcessing, disabled }: PromptPanelPr
         className={`
           w-full py-3 px-4 rounded-lg font-medium text-sm
           transition-all duration-200 flex items-center justify-center gap-2
-          ${
-            disabled || !prompt.trim() || isProcessing
-              ? "bg-white/5 text-white/30 cursor-not-allowed"
-              : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40"
+          ${disabled || !prompt.trim() || isProcessing
+            ? "bg-white/5 text-white/30 cursor-not-allowed"
+            : "bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-500/25 hover:shadow-indigo-500/40"
           }
         `}
       >
