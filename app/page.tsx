@@ -213,7 +213,16 @@ export default function VideoEditorPage() {
             />
             {videoFile && (
               <div className="px-6 py-4">
-                <StyleCard />
+                <StyleCard onSelect={(style) => {
+                  const styleRegex = /Apply (Grayscale|Sepia|Cinematic|Retro|Warm|Cool|Vibrant) style/i
+                  let newPrompt = prompt
+                  if (styleRegex.test(newPrompt)) {
+                    newPrompt = newPrompt.replace(styleRegex, `Apply ${style} style`)
+                  } else {
+                    newPrompt = newPrompt.trim() ? `${newPrompt}\nApply ${style} style` : `Apply ${style} style`
+                  }
+                  setPrompt(newPrompt)
+                }} />
               </div>
             )}
             <PromptPanel
